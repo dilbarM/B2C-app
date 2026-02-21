@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
 from database import users_collection
 from passlib.context import CryptContext
 from schemas import UserCreate
@@ -8,6 +10,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 app=FastAPI()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -32,10 +35,10 @@ def login(user: UserCreate):
     existing_user = users_collection.find_one({"email": user.email})
     if not existing_user:
         raise HTTPException(status_code=400, detail="invalid credentials")
-    if not verify_password(users_collection.password, existing_user["password"]):
+    if not verify_password(user.password, existing_user["password"]):
         raise HTTPException(status_code=400, detail="invalid credentials")
     
-    access_token = create_access_token({"sub": users_collection.email})
+    access_token = create_access_token({"sub": existing_user["email"]})
     return {"access_token": access_token, 
             "token_type": "bearer"}
 
@@ -47,11 +50,12 @@ def register(user: UserCreate):
         return {"message": "Email already registered"}
     hashed_password = hash_password(user.password)
 
-    users_collection.user_data.insert_one = {
+    user_data = {
         "name":user.name,
         "email":user.email,
         "password":hashed_password
     }
+    users_collection.insert_one(user_data)
     return {"message": "User registered successfully"}
 
 
@@ -68,3 +72,24 @@ def test_db():
 def get_users():
     users = list(users_collection.find({}, {"_id": 0}))
     return users
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="invalid token")
+        user = users_collection.find_one({"email": email})
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        return user
+    except JWTError:
+        raise HTTPException(status_code=401, detail="invalid token")
+ 
+@app.get("/profile")
+def read_profile(current_user:dict = Depends(get_current_user)):
+    return {
+            "name": current_user.get("name"), 
+            "email": current_user["email"]
+            }
